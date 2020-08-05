@@ -1,0 +1,213 @@
+
+library(MASS)
+
+#############################
+# Retorno Diário ou Mensal? #
+#############################
+
+
+diario = TRUE # Se for TRUE, a análise será diária, se for FALSE, a análise será mensal.
+#diario = FALSE # Se for TRUE, a análise será diária, se for FALSE, a análise será mensal.
+
+
+#Tratamento dos dados!!!
+#########################################################################################
+# Dados
+fundos <- read.table("FIA_BF_2018.csv", header = T, sep = ";", stringsAsFactors = F)
+fundos$date <- as.Date(fundos$date, format = "%m/%d/%Y")
+
+#fatores <- read.xlsx("Risk_Factor_BF_2018.xls", 1)
+fatores <- read.table("risk_factors.txt", header = T, sep = "\t", stringsAsFactors = F)
+
+fatores$date <- paste(fatores$day, fatores$month, fatores$year, sep = "/")
+fatores$date <- as.Date(fatores$date, format = "%d/%m/%Y")
+fatores <- fatores[, c(ncol(fatores), 4:(ncol(fatores)-1))]
+
+# Limpando os 0s iniciais transformando em NA
+limpar <- function(serie) {
+  j <- 0
+  i <- 1
+  while(j < 1) {
+    if (serie[i] == 0) {
+      serie[i] <- NA
+      i <- i+1
+    }
+    else {
+      j <- 1
+    }
+  }
+  return(serie)
+}
+
+fundos[, -1] <- as.data.frame(apply(fundos[, -1], 2, limpar))
+
+fundos <- fundos[fundos$date >= "2011-09-01", ]
+
+tem_na <- function(vetor) {
+  return(sum(is.na(vetor))!=0)
+}
+
+fundos <- fundos[, !apply(fundos, 2, tem_na)]
+
+possui_negativo <- function(serie) {
+  soma <- sum(serie < 0)
+  if (soma != 0) {
+    return(TRUE)
+  }
+  else {
+    return(FALSE)
+  }
+}
+
+fundos <- fundos[, c(TRUE, !apply(fundos[ , -1], 2, possui_negativo))]
+
+# Transformando os dados dos fundos em retornos
+retorno <- function(serie) {
+  num <- serie[-1]
+  soap <- serie[-length(serie)]
+  return(c(NA, log(num)-log(soap)))
+}
+
+retorno <- function(serie) {
+  return(c(NA, diff(log(serie))))
+}
+
+fundos[, -1] <- as.data.frame(apply(fundos[, -1], 2, retorno))
+
+fundos <- fundos[complete.cases(fundos),]
+
+if (!diario) {
+    #Agora vou transformar os retornos em retornos mensais.
+    acumular_retornos <- function(tabela) {
+      tabela[,-1] <- tabela[,-1]+1
+      final <- apply(tabela[,-1], 2, cumprod)[nrow(tabela),]
+      final <- as.data.frame(matrix(final-1, 1, ncol(tabela)-1))
+      final <- cbind(tabela[1,1], final)
+      colnames(final) <- colnames(tabela)
+      final$date <- as.character(final$date)
+      return(final)
+    }
+
+    # Primeiro para os fundos
+    fundos$date <- substr(fundos$date, 1, 7)
+    temporario <- split(fundos, fundos$date)
+    fundos <- data.frame()
+    for (i in 1:length(temporario)) {
+        fundos <- rbind(fundos, acumular_retornos(temporario[[i]]))
+    }
+
+    # Agora para os fatores.
+    fatores$date <- substr(fatores$date, 1, 7)
+    temporario <- split(fatores, fatores$date)
+    fatores <- data.frame()
+    for (i in 1:length(temporario)) {
+      fatores <- rbind(fatores, acumular_retornos(temporario[[i]]))
+    }
+
+    rm(temporario)
+}
+
+fatores <- fatores[fatores$date %in% fundos$date, ]
+fundos <- fundos[fundos$date %in% fatores$date, ]
+
+fundos <- fundos[, -1]
+fatores <- fatores[, -1]
+
+# Procurando outliers nos fundos
+possui_outlier <- function(serie) {
+  if (sum(serie > 1 | serie < -1) > 0) {
+    return(TRUE)
+  }
+  else {
+    return(FALSE)
+  }
+}
+
+fundos_com_outlier <- apply(fundos, 2, possui_outlier)
+
+fundos <- fundos[, !fundos_com_outlier]
+#########################################################################################
+
+# Estimação
+X <- cbind(1, as.matrix(fatores[, -2])) # Aqui estou tirando a segunda coluna que é o Risk Free.
+colnames(X) <- c("alpha", "SMB","HML","WML","IML","Rm_minus_Rf")
+Y <- as.matrix(fundos)
+
+Y <- Y - fatores[,2] # Fazendo retorno - Risk Free.
+
+t <- nrow(Y)
+n <- ncol(Y)
+hist(apply(Y,2,mean))
+hist(apply(Y,2,sd))
+
+modelo <- lm(Y ~ X-1)
+
+# Threshold
+delta_t <- 1.06 * sqrt(log(n)/t) * log(log(t))
+thr <- 1.5
+
+# Calculando matriz de variância e covariância.
+sparse <- sparse_matrix(modelo$residuals, thr)
+
+variancia <- sparse$covar
+
+rho2 <- sparse$correlation
+
+# Armazenando os alphas.
+alpha <- as.matrix(modelo$coefficients[1,])
+
+# Alterações à matriz de variância que serão utilizadas no screening.
+h_sigma_u <- 1/t*(t(modelo$residuals)%*%modelo$residuals)
+h_D <- t/(t-6)*diag(diag(h_sigma_u))
+
+# Calculando o "a" do teste Wald.  
+v <- t-ncol(X) # Graus de liberdade
+P_F <-diag(1, t, t) - X[,-1]%*%solve(t(X[,-1])%*%X[,-1])%*%t(X[,-1])
+cc <- matrix(1, 1, t)%*%P_F%*%matrix(1, t, 1)
+
+# Calculando a média e o desvio padrão do teste Wald padronizado.
+mu_wald <- n*(t-6)/(t-8)
+sigma_wald <- sqrt(2*n*(t-7)/(t-10))*(t-6)/(t-8)
+sigma_wald_adj <- sqrt(2*n*(v-1)/(v-4)*(1+(n-1)*rho2))*v/(v-2)
+
+# Calculando o teste Wald.
+waldTh <- cc*t(alpha)%*%solve(variancia)%*%alpha
+wald <- (waldTh - mu_wald)/sigma_wald_adj
+
+## PE
+
+std_alpha <- abs(alpha)/diag(h_D)^(1/2)
+alpha_s <- as.matrix(alpha[std_alpha > delta_t], ncol(Y), 1)
+sigma_s <- h_D[std_alpha > delta_t, std_alpha > delta_t]
+J <- cc*t(alpha_s)%*%solve(sigma_s)%*%alpha_s
+
+waldPE <- wald + J
+
+# Calculando os p-valores
+p_valor_wald   <- pnorm(wald)
+p_valor_waldPE <- pnorm(waldPE)
+
+sumario <- summary(modelo)
+p_valores <- vector()
+for (i in sumario) {
+  p_valores <- c(p_valores, coef(i)[1,4])
+}
+
+#ealphas <- vector()
+#for (i in sumario) {
+#  p_valores <- c(p_valores, coef(i)[1,4])
+#}
+
+hist(p_valores)
+abline(v=.05)
+
+p_valores_fd=p.adjust(p_valores, method="BH")
+
+hist(p_valores_fd)
+abline(v=.05)
+
+plot(p_valores,p_valores_fd)
+
+sum(p_valores<.05)/length(p_valores)
+sum(p_valores_fd<.05)/length(p_valores_fd)
+
