@@ -147,7 +147,7 @@ delta_t <- 1.06 * sqrt(log(n)/t) * log(log(t))
 thr <- 1.5
 
 # Calculando matriz de variância e covariância.
-sparse <- sparse_matrix(modelo$residuals, thr)
+sparse <- sparse_matrix(modelo$residuals, thr)# Não Disponibilizado, Favor entrar em contato com Autor!
 
 variancia <- sparse$covar
 
