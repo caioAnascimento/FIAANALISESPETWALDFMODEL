@@ -1,14 +1,8 @@
 
 library(MASS)
 
-#############################
-# Retorno Diário ou Mensal? #
-#############################
-
-
 diario = TRUE # Se for TRUE, a análise será diária, se for FALSE, a análise será mensal.
 #diario = FALSE # Se for TRUE, a análise será diária, se for FALSE, a análise será mensal.
-
 
 #Tratamento dos dados!!!
 #########################################################################################
